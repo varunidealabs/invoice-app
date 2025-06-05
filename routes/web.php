@@ -67,19 +67,17 @@ Route::middleware('auth')->group(function () {
         
         // Invoice and Quotation routes
         Route::resource('invoices', InvoiceController::class);
-        
         // Invoice specific actions
         Route::patch('invoices/{invoice}/mark-sent', [InvoiceController::class, 'markAsSent'])->name('invoices.mark-sent');
         Route::patch('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markAsPaid'])->name('invoices.mark-paid');
         
         // Quotation specific routes (NEW)
-        Route::patch('invoices/{invoice}/accept', [InvoiceController::class, 'acceptQuotation'])->name('quotations.accept');
-        Route::post('invoices/{invoice}/convert', [InvoiceController::class, 'convertToInvoice'])->name('quotations.convert');
+        Route::patch('quotations/{invoice}/accept', [InvoiceController::class, 'acceptQuotation'])->name('quotations.accept');
+        Route::post('quotations/{invoice}/convert', [InvoiceController::class, 'convertToInvoice'])->name('quotations.convert');
         
         // PDF routes (works for both invoices and quotations)
         Route::get('invoices/{invoice}/pdf', [InvoiceController::class, 'viewPdf'])->name('invoices.pdf');
         Route::get('invoices/{invoice}/download', [InvoiceController::class, 'downloadPdf'])->name('invoices.download');
-        Route::post('invoices/{invoice}/share', [InvoiceController::class, 'sharePdf'])->name('invoices.share');
         
         // Client routes
         Route::resource('clients', ClientController::class);

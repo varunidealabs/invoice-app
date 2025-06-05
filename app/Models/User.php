@@ -5,10 +5,11 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Laravel\Sanctum\HasApiTokens; // Add this import
 
 class User extends Authenticatable
 {
-    use HasFactory, Notifiable;
+    use HasFactory, Notifiable, HasApiTokens; // Add HasApiTokens here
 
     protected $fillable = [
         'name', 'email', 'password',
@@ -51,5 +52,11 @@ class User extends Authenticatable
     public function getCompanyNameAttribute(): string
     {
         return $this->company?->company_name ?? 'No Company Set';
+    }
+
+    // Optional: Helper method for API tokens
+    public function createApiToken(string $name = 'API Token'): string
+    {
+        return $this->createToken($name)->plainTextToken;
     }
 }

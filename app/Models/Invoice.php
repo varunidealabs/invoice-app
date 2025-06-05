@@ -185,27 +185,41 @@ class Invoice extends Model
         return "{$folder}/" . $this->getPdfFilename();
     }
 
-    public function generatePdf(): string
+        public function generatePdf(): string
     {
-        // Load relationships if not already loaded
-        $this->loadMissing(['client', 'company', 'items', 'payments']);
-        
-        // Generate PDF
-        $pdf = Pdf::loadView('invoices.pdf', ['invoice' => $this])
-            ->setPaper('a4', 'portrait')
-            ->setOptions([
-                'defaultFont' => 'sans-serif',
-                'isHtml5ParserEnabled' => true,
-                'isRemoteEnabled' => true,
-            ]);
-
-        // Store PDF
-        $path = $this->getPdfPath();
-        Storage::put($path, $pdf->output());
-        
-        return $path;
+        try {
+            // Load relationships if not already loaded
+            $this->loadMissing(['client', 'company', 'items', 'payments']);
+            
+            // Generate PDF
+            $pdf = Pdf::loadView('invoices.pdf', ['invoice' => $this])
+                ->setPaper('a4', 'portrait')
+                ->setOptions([
+                    'defaultFont' => 'sans-serif',
+                    'isHtml5ParserEnabled' => true,
+                    'isRemoteEnabled' => true,
+                ]);
+            
+            // Get the path where we'll store the PDF
+            $path = $this->getPdfPath();
+            
+            // Ensure the directory exists
+            $directory = dirname($path);
+            if (!Storage::exists($directory)) {
+                Storage::makeDirectory($directory);
+            }
+            
+            // Store PDF
+            $pdfContent = $pdf->output();
+            Storage::put($path, $pdfContent);
+            
+            return $path;
+        } catch (\Exception $e) {
+            \Log::error("PDF generation failed for invoice {$this->id}: " . $e->getMessage());
+            throw $e;
+        }
     }
-
+    
     public function downloadPdf()
     {
         $this->loadMissing(['client', 'company', 'items', 'payments']);
@@ -215,7 +229,7 @@ class Invoice extends Model
             
         return $pdf->download($this->getPdfFilename());
     }
-
+    
     public function streamPdf()
     {
         $this->loadMissing(['client', 'company', 'items', 'payments']);
@@ -225,26 +239,8 @@ class Invoice extends Model
             
         return $pdf->stream($this->getPdfFilename());
     }
-
-    public function getShareableLink(): array
-    {
-        // Generate and store PDF
-        $pdfPath = $this->generatePdf();
+    
         
-        // Generate temporary public URL (valid for 24 hours)
-        $url = Storage::temporaryUrl($pdfPath, now()->addDay());
-        
-        $documentType = $this->is_quotation ? 'Quotation' : 'Invoice';
-        
-        return [
-            'pdf_url' => $url,
-            'filename' => $this->getPdfFilename(),
-            'share_text' => "{$documentType} {$this->invoice_number} from {$this->company->company_name}",
-            'whatsapp_url' => "https://wa.me/?text=" . urlencode("Please find the {$documentType}: {$url}"),
-            'email_subject' => "{$documentType} {$this->invoice_number}",
-            'email_body' => "Please find attached {$documentType} {$this->invoice_number}.\n\nDownload: {$url}"
-        ];
-    }
 
     public function deletePdf(): bool
     {

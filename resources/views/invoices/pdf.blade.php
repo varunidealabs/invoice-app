@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Invoice {{ $invoice->invoice_number }}</title>
+    <title>{{ $invoice->is_quotation ? 'Quotation' : 'Invoice' }} {{ $invoice->invoice_number }}</title>
     <style>
         * {
             margin: 0;
@@ -71,9 +71,11 @@
         }
         
         .status.paid { background: #d4edda; color: #155724; }
+        .status.accepted { background: #d4edda; color: #155724; }
         .status.sent { background: #cce5ff; color: #004085; }
         .status.draft { background: #f8f9fa; color: #495057; }
         .status.overdue { background: #f8d7da; color: #721c24; }
+        .status.expired { background: #fff3cd; color: #856404; }
         
         .billing-section {
             display: table;
@@ -188,6 +190,27 @@
             border-top: 1px solid #eee;
             padding-top: 20px;
         }
+        
+        /* Quotation-specific styles */
+        .quotation-notice {
+            background: #e3f2fd;
+            border: 1px solid #2196f3;
+            border-radius: 5px;
+            padding: 10px;
+            margin-bottom: 20px;
+            font-size: 11px;
+            color: #1976d2;
+        }
+        
+        .validity-warning {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 5px;
+            padding: 8px;
+            margin-top: 10px;
+            font-size: 10px;
+            color: #856404;
+        }
     </style>
 </head>
 <body>
@@ -217,18 +240,42 @@
             </div>
             
             <div class="invoice-info">
-                <div class="invoice-title">INVOICE</div>
+                <div class="invoice-title">{{ $invoice->is_quotation ? 'QUOTATION' : 'INVOICE' }}</div>
                 <div class="invoice-number">{{ $invoice->invoice_number }}</div>
-                <span class="status {{ $invoice->is_overdue ? 'overdue' : $invoice->status }}">
-                    {{ $invoice->is_overdue ? 'Overdue' : $invoice->status_label }}
+                @php
+                    $statusClass = $invoice->status;
+                    if ($invoice->is_quotation && $invoice->is_expired) {
+                        $statusClass = 'expired';
+                    } elseif (!$invoice->is_quotation && $invoice->is_overdue) {
+                        $statusClass = 'overdue';
+                    }
+                @endphp
+                <span class="status {{ $statusClass }}">
+                    @if($invoice->is_quotation && $invoice->is_expired)
+                        Expired
+                    @elseif(!$invoice->is_quotation && $invoice->is_overdue)
+                        Overdue
+                    @else
+                        {{ $invoice->status_label }}
+                    @endif
                 </span>
             </div>
         </div>
 
+        <!-- Quotation Notice -->
+        @if($invoice->is_quotation)
+            <div class="quotation-notice">
+                <strong>QUOTATION NOTICE:</strong> This is a quotation for services/products. This is not an invoice and no payment is due at this time.
+                @if($invoice->valid_until)
+                    This quotation is valid until {{ $invoice->valid_until->format('F d, Y') }}.
+                @endif
+            </div>
+        @endif
+
         <!-- Billing Information -->
         <div class="billing-section">
             <div class="bill-to">
-                <div class="section-title">Bill To:</div>
+                <div class="section-title">{{ $invoice->is_quotation ? 'Quote For:' : 'Bill To:' }}</div>
                 <div class="client-name">{{ $invoice->client->name }}</div>
                 @if($invoice->client->contact_person)
                     <div class="address-line">{{ $invoice->client->contact_person }}</div>
@@ -257,21 +304,40 @@
             </div>
         </div>
 
-        <!-- Invoice Details -->
+        <!-- Document Details -->
         <table class="invoice-details">
-            <tr>
-                <td class="detail-label">Issue Date:</td>
-                <td>{{ $invoice->issue_date->format('F d, Y') }}</td>
-                <td class="detail-label">Due Date:</td>
-                <td>{{ $invoice->due_date->format('F d, Y') }}</td>
-            </tr>
-            <tr>
-                <td class="detail-label">Payment Terms:</td>
-                <td colspan="3">{{ $invoice->payment_terms }}</td>
-            </tr>
+            @if($invoice->is_quotation)
+                <tr>
+                    <td class="detail-label">Quote Date:</td>
+                    <td>{{ $invoice->issue_date->format('F d, Y') }}</td>
+                    @if($invoice->valid_until)
+                        <td class="detail-label">Valid Until:</td>
+                        <td>{{ $invoice->valid_until->format('F d, Y') }}</td>
+                    @else
+                        <td colspan="2"></td>
+                    @endif
+                </tr>
+            @else
+                <tr>
+                    <td class="detail-label">Issue Date:</td>
+                    <td>{{ $invoice->issue_date->format('F d, Y') }}</td>
+                    @if($invoice->due_date)
+                        <td class="detail-label">Due Date:</td>
+                        <td>{{ $invoice->due_date->format('F d, Y') }}</td>
+                    @else
+                        <td colspan="2"></td>
+                    @endif
+                </tr>
+            @endif
+            @if($invoice->payment_terms)
+                <tr>
+                    <td class="detail-label">{{ $invoice->is_quotation ? 'Terms:' : 'Payment Terms:' }}</td>
+                    <td colspan="3">{{ $invoice->payment_terms }}</td>
+                </tr>
+            @endif
         </table>
 
-        <!-- Invoice Items -->
+        <!-- Items Table -->
         <table class="items-table">
             <thead>
                 <tr>
@@ -307,10 +373,11 @@
                     </tr>
                 @endif
                 <tr class="total-row">
-                    <td>Total:</td>
+                    <td>{{ $invoice->is_quotation ? 'Quote Total:' : 'Total:' }}</td>
                     <td class="text-right">{{ $invoice->company->currency_symbol }}{{ number_format($invoice->total, 2) }}</td>
                 </tr>
-                @if($invoice->payments->sum('amount') > 0)
+                
+                @if(!$invoice->is_quotation && $invoice->payments->sum('amount') > 0)
                     <tr>
                         <td>Paid:</td>
                         <td class="text-right" style="color: #28a745;">{{ $invoice->company->currency_symbol }}{{ number_format($invoice->payments->sum('amount'), 2) }}</td>
@@ -323,6 +390,13 @@
             </table>
         </div>
 
+        <!-- Validity Warning for Quotations -->
+        @if($invoice->is_quotation && $invoice->valid_until && $invoice->valid_until->isPast())
+            <div class="validity-warning">
+                <strong>WARNING:</strong> This quotation has expired on {{ $invoice->valid_until->format('F d, Y') }}. Please request a new quotation for current pricing.
+            </div>
+        @endif
+
         <!-- Notes and Terms -->
         @if($invoice->notes || $invoice->terms)
             <div class="notes-section">
@@ -334,10 +408,35 @@
                 @endif
                 @if($invoice->terms)
                     <div>
-                        <div class="notes-title">Terms & Conditions:</div>
+                        <div class="notes-title">{{ $invoice->is_quotation ? 'Quote Terms & Conditions:' : 'Terms & Conditions:' }}</div>
                         <div>{!! nl2br(e($invoice->terms)) !!}</div>
                     </div>
                 @endif
+            </div>
+        @endif
+
+        <!-- Quotation Acceptance Section -->
+        @if($invoice->is_quotation && $invoice->status !== 'accepted')
+            <div class="notes-section">
+                <div class="notes-title">Quote Acceptance:</div>
+                <p style="margin-bottom: 15px;">To accept this quotation, please sign and return this document or send written confirmation.</p>
+                
+                <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
+                    <tr>
+                        <td style="width: 50%; padding: 20px 0; border-bottom: 1px solid #333;">
+                            <div style="text-align: center;">
+                                <div style="margin-bottom: 5px;">_________________________________</div>
+                                <div style="font-size: 10px;">Client Signature</div>
+                            </div>
+                        </td>
+                        <td style="width: 50%; padding: 20px 0; border-bottom: 1px solid #333;">
+                            <div style="text-align: center;">
+                                <div style="margin-bottom: 5px;">_________________________________</div>
+                                <div style="font-size: 10px;">Date</div>
+                            </div>
+                        </td>
+                    </tr>
+                </table>
             </div>
         @endif
 
@@ -346,6 +445,9 @@
             <p>Generated on {{ now()->format('F d, Y \a\t H:i:s') }}</p>
             @if($invoice->company->website)
                 <p>{{ $invoice->company->website }}</p>
+            @endif
+            @if($invoice->is_quotation)
+                <p style="margin-top: 10px; font-style: italic;">This quotation is valid until {{ $invoice->valid_until ? $invoice->valid_until->format('F d, Y') : 'further notice' }}.</p>
             @endif
         </div>
     </div>

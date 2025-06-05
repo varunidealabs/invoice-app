@@ -2,10 +2,10 @@
     <x-slot name="header">
         <div class="flex justify-between items-center">
             <h2 class="font-semibold text-xl text-gray-800 dark:text-gray-200 leading-tight">
-                {{ __('Create Invoice') }}
+                {{ $isQuotation ? __('Create Quotation') : __('Create Invoice') }}
             </h2>
-            <a href="{{ route('invoices.index') }}" class="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
-                Back to Invoices
+            <a href="{{ route('invoices.index', ['type' => $isQuotation ? 'quotation' : 'invoice']) }}" class="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
+                Back to {{ $isQuotation ? 'Quotations' : 'Invoices' }}
             </a>
         </div>
     </x-slot>
@@ -16,6 +16,9 @@
                 <div class="p-6">
                     <form method="POST" action="{{ route('invoices.store') }}" x-data="invoiceForm()">
                         @csrf
+                        
+                        <!-- Hidden field to indicate if this is a quotation -->
+                        <input type="hidden" name="is_quotation" value="{{ $isQuotation ? 'true' : 'false' }}">
 
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
                             <!-- Client Selection -->
@@ -61,12 +64,20 @@
                                 <x-input-error :messages="$errors->get('issue_date')" class="mt-2" />
                             </div>
 
-                            <!-- Due Date -->
-                            <div>
-                                <x-input-label for="due_date" :value="__('Due Date')" />
-                                <x-text-input id="due_date" class="block mt-1 w-full" type="date" name="due_date" :value="old('due_date', now()->addDays(30)->format('Y-m-d'))" required />
-                                <x-input-error :messages="$errors->get('due_date')" class="mt-2" />
-                            </div>
+                            <!-- Due Date or Valid Until - UPDATED -->
+                            @if($isQuotation)
+                                <div>
+                                    <x-input-label for="valid_until" :value="__('Valid Until')" />
+                                    <x-text-input id="valid_until" class="block mt-1 w-full" type="date" name="valid_until" :value="old('valid_until', now()->addDays(30)->format('Y-m-d'))" required />
+                                    <x-input-error :messages="$errors->get('valid_until')" class="mt-2" />
+                                </div>
+                            @else
+                                <div>
+                                    <x-input-label for="due_date" :value="__('Due Date')" />
+                                    <x-text-input id="due_date" class="block mt-1 w-full" type="date" name="due_date" :value="old('due_date', now()->addDays(30)->format('Y-m-d'))" required />
+                                    <x-input-error :messages="$errors->get('due_date')" class="mt-2" />
+                                </div>
+                            @endif
 
                             <!-- Tax Rate -->
                             <div>
@@ -76,10 +87,12 @@
                             </div>
                         </div>
 
-                        <!-- Invoice Items -->
+                        <!-- Document Items - UPDATED -->
                         <div class="mb-8">
                             <div class="flex justify-between items-center mb-4">
-                                <h3 class="text-lg font-medium text-gray-900 dark:text-gray-100">Invoice Items</h3>
+                                <h3 class="text-lg font-medium text-gray-900 dark:text-gray-100">
+                                    {{ $isQuotation ? 'Quotation Items' : 'Invoice Items' }}
+                                </h3>
                                 <button type="button" @click="addItem()" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md text-sm font-medium">
                                     Add Item
                                 </button>
@@ -130,7 +143,7 @@
                                 </template>
                             </div>
 
-                            <!-- Invoice Totals -->
+                            <!-- Document Totals - UPDATED -->
                             <div class="mt-6 bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
                                 <div class="max-w-sm ml-auto space-y-2">
                                     <div class="flex justify-between">
@@ -163,13 +176,13 @@
                             <x-input-error :messages="$errors->get('terms')" class="mt-2" />
                         </div>
 
-                        <!-- Submit Buttons -->
+                        <!-- Submit Buttons - UPDATED -->
                         <div class="flex items-center justify-end space-x-4">
-                            <a href="{{ route('invoices.index') }}" class="bg-gray-300 hover:bg-gray-400 text-gray-700 px-6 py-2 rounded-md text-sm font-medium">
+                            <a href="{{ route('invoices.index', ['type' => $isQuotation ? 'quotation' : 'invoice']) }}" class="bg-gray-300 hover:bg-gray-400 text-gray-700 px-6 py-2 rounded-md text-sm font-medium">
                                 Cancel
                             </a>
                             <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-md text-sm font-medium">
-                                Create Invoice
+                                Create {{ $isQuotation ? 'Quotation' : 'Invoice' }}
                             </button>
                         </div>
                     </form>
@@ -184,14 +197,14 @@
                 items: [
                     { description: '', quantity: 1, unit_price: 0 }
                 ],
-                taxRate: 0,
+                taxRate: {{ old('tax_rate', '0') }},
                 
                 get subtotal() {
-                    return this.items.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
+                    return this.items.reduce((sum, item) => sum + (parseFloat(item.quantity || 0) * parseFloat(item.unit_price || 0)), 0);
                 },
                 
                 get taxAmount() {
-                    return this.subtotal * (this.taxRate / 100);
+                    return this.subtotal * (parseFloat(this.taxRate || 0) / 100);
                 },
                 
                 get total() {
