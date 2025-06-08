@@ -142,49 +142,161 @@ return [
     */
 
     'redis' => [
-    'client' => env('REDIS_CLIENT', 'phpredis'),
-    
-    'options' => [
-        'cluster' => env('REDIS_CLUSTER', 'redis'),
-        'prefix' => env('REDIS_PREFIX', 'invoice_app:'),
-        // Performance optimizations
-        'serializer' => 'php', // Use PHP serializer for better performance
-        'compression' => 'lz4', // Enable compression
-    ],
-    
-    'default' => [
-        'url' => env('REDIS_URL'),
-        'host' => env('REDIS_HOST', '127.0.0.1'),
-        'username' => env('REDIS_USERNAME'),
-        'password' => env('REDIS_PASSWORD'),
-        'port' => env('REDIS_PORT', '6379'),
-        'database' => env('REDIS_DB', '0'),
-        'read_timeout' => 60,
-        'context' => [],
-    ],
-    
-    'cache' => [
-        'url' => env('REDIS_URL'),
-        'host' => env('REDIS_HOST', '127.0.0.1'),
-        'username' => env('REDIS_USERNAME'),
-        'password' => env('REDIS_PASSWORD'),
-        'port' => env('REDIS_PORT', '6379'),
-        'database' => env('REDIS_CACHE_DB', '1'),
-        'read_timeout' => 60,
-        'context' => [],
-    ],
-    
-    'session' => [
-        'url' => env('REDIS_URL'),
-        'host' => env('REDIS_HOST', '127.0.0.1'),
-        'username' => env('REDIS_USERNAME'),
-        'password' => env('REDIS_PASSWORD'),
-        'port' => env('REDIS_PORT', '6379'),
-        'database' => env('REDIS_SESSION_DB', '2'),
-        'read_timeout' => 60,
-        'context' => [],
-       ],
+
+        'client' => env('REDIS_CLIENT', 'phpredis'),
+
+        'options' => [
+            'cluster' => env('REDIS_CLUSTER', 'redis'),
+            'prefix' => env('REDIS_PREFIX', Str::slug(env('APP_NAME', 'invoice_app'), '_').'_database_'),
+            // Performance optimizations
+            'serializer' => env('REDIS_SERIALIZER', 'php'), // php, igbinary, json
+            'compression' => env('REDIS_COMPRESSION', 'lz4'), // lz4, zstd, gzip
+            'read_timeout' => env('REDIS_READ_TIMEOUT', 60),
+            'timeout' => env('REDIS_TIMEOUT', 5),
+        ],
+
+        'default' => [
+            'url' => env('REDIS_URL'),
+            'host' => env('REDIS_HOST', '127.0.0.1'),
+            'username' => env('REDIS_USERNAME'),
+            'password' => env('REDIS_PASSWORD'),
+            'port' => env('REDIS_PORT', '6379'),
+            'database' => env('REDIS_DB', '0'),
+            'read_timeout' => 60,
+            'context' => [],
+            // Connection pool settings for better performance
+            'pool' => [
+                'min_connections' => env('REDIS_MIN_CONNECTIONS', 1),
+                'max_connections' => env('REDIS_MAX_CONNECTIONS', 10),
+                'retry_interval' => env('REDIS_RETRY_INTERVAL', 100), // milliseconds
+                'max_idle_time' => env('REDIS_MAX_IDLE_TIME', 300), // seconds
+            ],
+        ],
+
+        'cache' => [
+            'url' => env('REDIS_URL'),
+            'host' => env('REDIS_HOST', '127.0.0.1'),
+            'username' => env('REDIS_USERNAME'),
+            'password' => env('REDIS_PASSWORD'),
+            'port' => env('REDIS_PORT', '6379'),
+            'database' => env('REDIS_CACHE_DB', '1'),
+            'read_timeout' => 60,
+            'context' => [],
+            // Cache-specific optimizations
+            'options' => [
+                'maxmemory-policy' => 'allkeys-lru',
+                'maxmemory' => env('REDIS_CACHE_MAXMEMORY', '512mb'),
+                'tcp-keepalive' => 60,
+                'timeout' => 0, // Persistent connections
+            ],
+        ],
+
+        'session' => [
+            'url' => env('REDIS_URL'),
+            'host' => env('REDIS_HOST', '127.0.0.1'),
+            'username' => env('REDIS_USERNAME'),
+            'password' => env('REDIS_PASSWORD'),
+            'port' => env('REDIS_PORT', '6379'),
+            'database' => env('REDIS_SESSION_DB', '2'),
+            'read_timeout' => 60,
+            'context' => [],
+            // Session-specific settings
+            'options' => [
+                'maxmemory-policy' => 'allkeys-lru',
+                'maxmemory' => env('REDIS_SESSION_MAXMEMORY', '256mb'),
+            ],
+        ],
+
+        'queue' => [
+            'url' => env('REDIS_URL'),
+            'host' => env('REDIS_HOST', '127.0.0.1'),
+            'username' => env('REDIS_USERNAME'),
+            'password' => env('REDIS_PASSWORD'),
+            'port' => env('REDIS_PORT', '6379'),
+            'database' => env('REDIS_QUEUE_DB', '3'),
+            'read_timeout' => 60,
+            'context' => [],
+            // Queue-specific settings
+            'options' => [
+                'maxmemory-policy' => 'noeviction', // Don't evict queue jobs
+                'appendonly' => 'yes', // Persistence for queue jobs
+                'appendfsync' => 'everysec',
+            ],
+        ],
+
+        // High-performance connection for real-time data
+        'realtime' => [
+            'url' => env('REDIS_URL'),
+            'host' => env('REDIS_HOST', '127.0.0.1'),
+            'username' => env('REDIS_USERNAME'),
+            'password' => env('REDIS_PASSWORD'),
+            'port' => env('REDIS_PORT', '6379'),
+            'database' => env('REDIS_REALTIME_DB', '4'),
+            'read_timeout' => 30,
+            'context' => [],
+            'options' => [
+                'maxmemory-policy' => 'allkeys-lru',
+                'maxmemory' => '128mb',
+                'tcp-nodelay' => 'yes', // Low latency
+            ],
+        ],
+
+        // Analytics and reporting data
+        'analytics' => [
+            'url' => env('REDIS_URL'),
+            'host' => env('REDIS_HOST', '127.0.0.1'),
+            'username' => env('REDIS_USERNAME'),
+            'password' => env('REDIS_PASSWORD'),
+            'port' => env('REDIS_PORT', '6379'),
+            'database' => env('REDIS_ANALYTICS_DB', '5'),
+            'read_timeout' => 60,
+            'context' => [],
+            'options' => [
+                'maxmemory-policy' => 'allkeys-lru',
+                'maxmemory' => '1gb',
+            ],
+        ],
+
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Database Query Logging
+    |--------------------------------------------------------------------------
+    |
+    | Enable query logging for performance monitoring and debugging.
+    |
+    */
+
+    'query_logging' => [
+        'enabled' => env('DB_QUERY_LOG', false),
+        'slow_query_threshold' => env('DB_SLOW_QUERY_THRESHOLD', 1000), // milliseconds
+        'log_all_queries' => env('DB_LOG_ALL_QUERIES', false),
+        'channels' => ['single', 'slack'], // Log channels to use
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Database Performance Settings
+    |--------------------------------------------------------------------------
+    |
+    | Settings to optimize database performance.
+    |
+    */
+
+    'performance' => [
+        'connection_timeout' => env('DB_CONNECTION_TIMEOUT', 60),
+        'query_timeout' => env('DB_QUERY_TIMEOUT', 30),
+        'max_connections' => env('DB_MAX_CONNECTIONS', 20),
+        'idle_timeout' => env('DB_IDLE_TIMEOUT', 300),
+        
+        // Connection pooling for Redis
+        'redis_pool' => [
+            'enabled' => env('REDIS_POOL_ENABLED', true),
+            'min_connections' => env('REDIS_POOL_MIN', 5),
+            'max_connections' => env('REDIS_POOL_MAX', 20),
+            'acquire_timeout' => env('REDIS_POOL_ACQUIRE_TIMEOUT', 5000), // milliseconds
+        ],
+    ],
 
 ];

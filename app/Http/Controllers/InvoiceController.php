@@ -4,11 +4,13 @@ namespace App\Http\Controllers;
 
 use App\Models\Invoice;
 use App\Models\Client;
+use App\Services\CacheService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use App\Http\Resources\InvoiceResource;
-use Illuminate\Http\JsonResponse;
 
 class InvoiceController extends Controller
 {
@@ -19,49 +21,77 @@ class InvoiceController extends Controller
         $type = $request->get('type'); // Can be 'invoice', 'quotation', or null (all)
         
         $company = auth()->user()->company;
-        $query = $company->allDocuments()->with(['client', 'payments']);
         
-        // Filter by document type if specified
-        if ($type === 'quotation') {
-            $query->quotations();
-        } elseif ($type === 'invoice') {
-            $query->invoices();
-        }
-        // If $type is null, show both invoices and quotations
+        // Use cache only when no search or filters are applied
+        $useCache = !$search && !$status && !$type;
         
-        // Apply status filters
-        $query->when($status, function ($query, $status) use ($type) {
-            if ($status === 'overdue') {
-                $query->overdue(); // Only applies to invoices
-            } elseif ($status === 'expired') {
-                $query->where('is_quotation', true)
-                      ->where('valid_until', '<', now())
-                      ->whereNotIn('status', ['accepted', 'cancelled']);
-            } elseif ($status === 'paid') {
-                // Show both paid invoices and accepted quotations
-                $query->where(function($q) {
-                    $q->where(function($sub) {
-                        $sub->where('is_quotation', false)->where('status', 'paid');
-                    })->orWhere(function($sub) {
-                        $sub->where('is_quotation', true)->where('status', 'accepted');
-                    });
-                });
-            } else {
-                $query->byStatus($status);
+        if ($useCache) {
+            // Use cached data for basic listing
+            $invoices = CacheService::getAllDocuments($company->id);
+            
+            // Convert to paginator
+            $perPage = 15;
+            $currentPage = request()->get('page', 1);
+            $items = $invoices->forPage($currentPage, $perPage);
+            
+            $paginator = new \Illuminate\Pagination\LengthAwarePaginator(
+                $items,
+                $invoices->count(),
+                $perPage,
+                $currentPage,
+                ['path' => request()->url(), 'pageName' => 'page']
+            );
+            
+            $invoices = $paginator;
+            Log::info("Used cached invoice list for company {$company->id}");
+        } else {
+            // Dynamic query for filtered results
+            $query = $company->allDocuments()->with(['client', 'payments']);
+            
+            // Filter by document type if specified
+            if ($type === 'quotation') {
+                $query->quotations();
+            } elseif ($type === 'invoice') {
+                $query->invoices();
             }
-        });
+            
+            // Apply status filters
+            $query->when($status, function ($query, $status) use ($type) {
+                if ($status === 'overdue') {
+                    $query->overdue(); // Only applies to invoices
+                } elseif ($status === 'expired') {
+                    $query->where('is_quotation', true)
+                          ->where('valid_until', '<', now())
+                          ->whereNotIn('status', ['accepted', 'cancelled']);
+                } elseif ($status === 'paid') {
+                    // Show both paid invoices and accepted quotations
+                    $query->where(function($q) {
+                        $q->where(function($sub) {
+                            $sub->where('is_quotation', false)->where('status', 'paid');
+                        })->orWhere(function($sub) {
+                            $sub->where('is_quotation', true)->where('status', 'accepted');
+                        });
+                    });
+                } else {
+                    $query->byStatus($status);
+                }
+            });
+            
+            // Apply search filters
+            $query->when($search, function ($query, $search) {
+                $query->whereHas('client', function ($q) use ($search) {
+                    $q->where('name', 'like', "%{$search}%");
+                })->orWhere('invoice_number', 'like', "%{$search}%");
+            });
+            
+            $invoices = $query->latest('created_at')->paginate(15);
+            Log::info("Dynamic query used for invoice list with filters");
+        }
         
-        // Apply search filters
-        $query->when($search, function ($query, $search) {
-            $query->whereHas('client', function ($q) use ($search) {
-                $q->where('name', 'like', "%{$search}%");
-            })->orWhere('invoice_number', 'like', "%{$search}%");
-        });
-        
-        $invoices = $query->latest('created_at')->paginate(15);
-        $statusCounts = $this->getStatusCounts();
+        // Get cached status counts
+        $statusCounts = CacheService::getStatusCounts($company->id);
 
-        // NEW: Check if it's an API request
+        // API Response
         if ($request->expectsJson() || $request->is('api/*')) {
             return response()->json([
                 'message' => 'Documents retrieved successfully',
@@ -71,11 +101,12 @@ class InvoiceController extends Controller
                     'last_page' => $invoices->lastPage(),
                     'per_page' => $invoices->perPage(),
                     'total' => $invoices->total(),
-                ]
+                ],
+                'status_counts' => $statusCounts,
+                'cache_used' => $useCache
             ]);
         }
         
-        // EXISTING: Web response (keep unchanged)
         return view('invoices.index', compact('invoices', 'status', 'search', 'statusCounts', 'type'));
     }
 
@@ -83,34 +114,65 @@ class InvoiceController extends Controller
     {
         $this->authorize('view', $invoice);
         
-        $invoice->load(['client', 'items', 'payments']);
-        
-        // NEW: Check if it's an API request
+        // Cache invoice details
+        $cacheKey = "invoice_details_{$invoice->id}";
+        $invoiceDetails = Cache::tags(['invoices', 'clients'])
+            ->remember($cacheKey, 1800, function() use ($invoice) { // 30 minutes
+                Log::info("Cache MISS: Loading invoice details for invoice {$invoice->id}");
+                
+                return $invoice->load(['client', 'items', 'payments', 'company']);
+            });
+
+        // API Response
         if (request()->expectsJson() || request()->is('api/*')) {
             return response()->json([
                 'message' => 'Document retrieved successfully',
-                'data' => new InvoiceResource($invoice)
+                'data' => new InvoiceResource($invoiceDetails)
             ]);
         }
         
-        // EXISTING: Web response (keep unchanged)
-        return view('invoices.show', compact('invoice'));
+        return view('invoices.show', ['invoice' => $invoiceDetails]);
     }
 
     public function create(Request $request)
     {
-        $clients = auth()->user()->company->clients()
-            ->orderBy('name')
-            ->get();
+        // Get cached clients list
+        $companyId = auth()->user()->company->id;
+        $clients = CacheService::getClientsList($companyId);
 
         if ($clients->isEmpty()) {
-            return redirect()->route('clients.create')
-                ->with('info', 'Please create a client first before creating a document.');
+            $message = 'Please create a client first before creating a document.';
+            
+            if ($request->expectsJson() || $request->is('api/*')) {
+                return response()->json(['message' => $message], 422);
+            }
+            
+            return redirect()->route('clients.create')->with('info', $message);
         }
 
         $selectedClientId = $request->get('client');
         $type = $request->get('type', 'invoice');
         $isQuotation = $type === 'quotation';
+
+        // API Response
+        if ($request->expectsJson() || $request->is('api/*')) {
+            return response()->json([
+                'message' => 'Create form data',
+                'data' => [
+                    'clients' => $clients,
+                    'type' => $type,
+                    'is_quotation' => $isQuotation,
+                    'selected_client_id' => $selectedClientId,
+                    'payment_terms_options' => [
+                        'Due on receipt' => 'Due on receipt',
+                        'Net 15' => 'Net 15 days',
+                        'Net 30' => 'Net 30 days',
+                        'Net 45' => 'Net 45 days',
+                        'Net 60' => 'Net 60 days'
+                    ]
+                ]
+            ]);
+        }
 
         return view('invoices.create', compact('clients', 'selectedClientId', 'isQuotation'));
     }
@@ -153,7 +215,10 @@ class InvoiceController extends Controller
                 return $invoice;
             });
 
-            // NEW: Check if it's an API request
+            // Cache will be automatically invalidated by observer
+            Log::info("Invoice created: {$invoice->id}");
+
+            // API Response
             if ($request->expectsJson() || $request->is('api/*')) {
                 $invoice->load(['client', 'items', 'company']);
                 return response()->json([
@@ -162,7 +227,6 @@ class InvoiceController extends Controller
                 ], 201);
             }
 
-            // EXISTING: Web response (keep unchanged)
             $type = $isQuotation ? 'quotation' : 'invoice';
             $message = $isQuotation ? 'Quotation created successfully!' : 'Invoice created successfully!';
 
@@ -170,9 +234,8 @@ class InvoiceController extends Controller
                 ->with('success', $message);
                 
         } catch (\Exception $e) {
-            \Log::error('Document creation failed: ' . $e->getMessage());
+            Log::error('Document creation failed: ' . $e->getMessage());
             
-            // NEW: API error response
             if ($request->expectsJson() || $request->is('api/*')) {
                 return response()->json([
                     'message' => 'Error creating document',
@@ -180,7 +243,6 @@ class InvoiceController extends Controller
                 ], 500);
             }
             
-            // EXISTING: Web error response
             return back()->withInput()
                 ->with('error', 'Error creating document. Please try again.');
         }
@@ -192,15 +254,31 @@ class InvoiceController extends Controller
         
         if ($invoice->status === 'paid' || ($invoice->is_quotation && $invoice->status === 'accepted')) {
             $documentType = $invoice->is_quotation ? 'quotations' : 'invoices';
-            return redirect()->route('invoices.show', $invoice)
-                ->with('error', "Cannot edit {$documentType} that have been paid/accepted.");
+            $message = "Cannot edit {$documentType} that have been paid/accepted.";
+            
+            if (request()->expectsJson() || request()->is('api/*')) {
+                return response()->json(['message' => $message], 422);
+            }
+            
+            return redirect()->route('invoices.show', $invoice)->with('error', $message);
         }
 
-        $clients = auth()->user()->company->clients()
-            ->orderBy('name')
-            ->get();
+        // Get cached clients list
+        $companyId = auth()->user()->company->id;
+        $clients = CacheService::getClientsList($companyId);
 
         $invoice->load('items');
+
+        // API Response
+        if (request()->expectsJson() || request()->is('api/*')) {
+            return response()->json([
+                'message' => 'Edit form data',
+                'data' => [
+                    'invoice' => new InvoiceResource($invoice),
+                    'clients' => $clients
+                ]
+            ]);
+        }
 
         return view('invoices.edit', compact('invoice', 'clients'));
     }
@@ -211,17 +289,13 @@ class InvoiceController extends Controller
         
         if ($invoice->status === 'paid' || ($invoice->is_quotation && $invoice->status === 'accepted')) {
             $documentType = $invoice->is_quotation ? 'quotations' : 'invoices';
+            $message = "Cannot edit {$documentType} that have been paid/accepted.";
             
-            // NEW: API error response
             if ($request->expectsJson() || $request->is('api/*')) {
-                return response()->json([
-                    'message' => "Cannot edit {$documentType} that have been paid/accepted."
-                ], 422);
+                return response()->json(['message' => $message], 422);
             }
             
-            // EXISTING: Web error response
-            return redirect()->route('invoices.show', $invoice)
-                ->with('error', "Cannot edit {$documentType} that have been paid/accepted.");
+            return redirect()->route('invoices.show', $invoice)->with('error', $message);
         }
 
         $validated = $this->validateInvoice($request, $invoice->id);
@@ -237,7 +311,6 @@ class InvoiceController extends Controller
                     'tax_rate' => $validated['tax_rate'] ?? 0,
                 ];
 
-                // Add appropriate date field based on document type
                 if ($invoice->is_quotation) {
                     $updateData['valid_until'] = $validated['valid_until'];
                 } else {
@@ -261,9 +334,11 @@ class InvoiceController extends Controller
                 $invoice->calculateTotals();
             });
 
+            // Cache will be automatically invalidated by observer
+            Log::info("Invoice updated: {$invoice->id}");
+
             $documentType = $invoice->is_quotation ? 'Quotation' : 'Invoice';
             
-            // NEW: Check if it's an API request
             if (request()->expectsJson() || request()->is('api/*')) {
                 $invoice->load(['client', 'items', 'company']);
                 return response()->json([
@@ -272,13 +347,12 @@ class InvoiceController extends Controller
                 ]);
             }
             
-            // EXISTING: Web response
             return redirect()->route('invoices.show', $invoice)
                 ->with('success', "{$documentType} updated successfully!");
+                
         } catch (\Exception $e) {
-            \Log::error('Document update failed: ' . $e->getMessage());
+            Log::error('Document update failed: ' . $e->getMessage());
             
-            // NEW: API error response
             if (request()->expectsJson() || request()->is('api/*')) {
                 return response()->json([
                     'message' => 'Error updating document',
@@ -286,7 +360,6 @@ class InvoiceController extends Controller
                 ], 500);
             }
             
-            // EXISTING: Web error response
             return back()->withInput()
                 ->with('error', 'Error updating document. Please try again.');
         }
@@ -298,31 +371,43 @@ class InvoiceController extends Controller
         
         if ($invoice->status === 'paid' || ($invoice->is_quotation && $invoice->status === 'accepted')) {
             $documentType = $invoice->is_quotation ? 'quotations' : 'invoices';
+            $message = "Cannot delete {$documentType} that have been paid/accepted.";
             
-            // NEW: API error response
             if (request()->expectsJson() || request()->is('api/*')) {
-                return response()->json([
-                    'message' => "Cannot delete {$documentType} that have been paid/accepted."
-                ], 422);
+                return response()->json(['message' => $message], 422);
             }
             
-            // EXISTING: Web error response
-            return back()->with('error', "Cannot delete {$documentType} that have been paid/accepted.");
+            return back()->with('error', $message);
         }
 
-        $documentType = $invoice->is_quotation ? 'Quotation' : 'Invoice';
-        $invoice->delete();
+        try {
+            $documentType = $invoice->is_quotation ? 'Quotation' : 'Invoice';
+            $invoice->delete();
+            
+            // Cache will be automatically invalidated by observer
+            Log::info("Invoice deleted: {$invoice->id}");
 
-        // NEW: Check if it's an API request
-        if (request()->expectsJson() || request()->is('api/*')) {
-            return response()->json([
-                'message' => "{$documentType} deleted successfully"
-            ]);
+            if (request()->expectsJson() || request()->is('api/*')) {
+                return response()->json([
+                    'message' => "{$documentType} deleted successfully"
+                ]);
+            }
+            
+            return redirect()->route('invoices.index')
+                ->with('success', "{$documentType} deleted successfully!");
+                
+        } catch (\Exception $e) {
+            Log::error('Invoice deletion failed: ' . $e->getMessage());
+            
+            if (request()->expectsJson() || request()->is('api/*')) {
+                return response()->json([
+                    'message' => 'Error deleting document',
+                    'error' => $e->getMessage()
+                ], 500);
+            }
+            
+            return back()->with('error', 'Error deleting document. Please try again.');
         }
-        
-        // EXISTING: Web response
-        return redirect()->route('invoices.index')
-            ->with('success', "{$documentType} deleted successfully!");
     }
 
     public function downloadPdf(Invoice $invoice)
@@ -345,9 +430,11 @@ class InvoiceController extends Controller
         
         $invoice->markAsSent();
         
+        // Invalidate cache for this specific invoice
+        Cache::tags(['invoices'])->forget("invoice_details_{$invoice->id}");
+        
         $documentType = $invoice->is_quotation ? 'Quotation' : 'Invoice';
         
-        // NEW: Check if it's an API request
         if (request()->expectsJson() || request()->is('api/*')) {
             $invoice->load(['client', 'items', 'company']);
             return response()->json([
@@ -356,7 +443,6 @@ class InvoiceController extends Controller
             ]);
         }
         
-        // EXISTING: Web response
         return back()->with('success', "{$documentType} marked as sent!");
     }
 
@@ -372,7 +458,9 @@ class InvoiceController extends Controller
             $message = 'Invoice marked as paid';
         }
         
-        // NEW: Check if it's an API request
+        // Invalidate cache for this specific invoice
+        Cache::tags(['invoices'])->forget("invoice_details_{$invoice->id}");
+        
         if (request()->expectsJson() || request()->is('api/*')) {
             $invoice->load(['client', 'items', 'company']);
             return response()->json([
@@ -381,7 +469,6 @@ class InvoiceController extends Controller
             ]);
         }
         
-        // EXISTING: Web response
         return back()->with('success', $message . '!');
     }
 
@@ -390,21 +477,21 @@ class InvoiceController extends Controller
         $this->authorize('update', $quotation);
         
         if (!$quotation->is_quotation) {
-            // NEW: API error response
+            $message = 'This is not a quotation.';
+            
             if (request()->expectsJson() || request()->is('api/*')) {
-                return response()->json([
-                    'message' => 'This is not a quotation'
-                ], 422);
+                return response()->json(['message' => $message], 422);
             }
             
-            // EXISTING: Web error response
-            return back()->with('error', 'This is not a quotation.');
+            return back()->with('error', $message);
         }
 
         try {
             $invoice = $quotation->convertToInvoice();
             
-            // NEW: Check if it's an API request
+            // Cache will be automatically invalidated by observer
+            Log::info("Quotation {$quotation->id} converted to invoice {$invoice->id}");
+            
             if (request()->expectsJson() || request()->is('api/*')) {
                 $invoice->load(['client', 'items', 'company']);
                 return response()->json([
@@ -413,11 +500,12 @@ class InvoiceController extends Controller
                 ], 201);
             }
             
-            // EXISTING: Web response
             return redirect()->route('invoices.show', $invoice)
                 ->with('success', 'Quotation converted to invoice successfully!');
+                
         } catch (\Exception $e) {
-            // NEW: API error response
+            Log::error('Quotation conversion failed: ' . $e->getMessage());
+            
             if (request()->expectsJson() || request()->is('api/*')) {
                 return response()->json([
                     'message' => 'Error converting quotation',
@@ -425,7 +513,6 @@ class InvoiceController extends Controller
                 ], 500);
             }
             
-            // EXISTING: Web error response
             return back()->with('error', 'Error converting quotation: ' . $e->getMessage());
         }
     }
@@ -435,20 +522,20 @@ class InvoiceController extends Controller
         $this->authorize('update', $quotation);
         
         if (!$quotation->is_quotation) {
-            // NEW: API error response
+            $message = 'This is not a quotation.';
+            
             if (request()->expectsJson() || request()->is('api/*')) {
-                return response()->json([
-                    'message' => 'This is not a quotation'
-                ], 422);
+                return response()->json(['message' => $message], 422);
             }
             
-            // EXISTING: Web error response
-            return back()->with('error', 'This is not a quotation.');
+            return back()->with('error', $message);
         }
 
         $quotation->markAsAccepted();
         
-        // NEW: Check if it's an API request
+        // Invalidate cache for this specific quotation
+        Cache::tags(['quotations'])->forget("invoice_details_{$quotation->id}");
+        
         if (request()->expectsJson() || request()->is('api/*')) {
             $quotation->load(['client', 'items', 'company']);
             return response()->json([
@@ -457,7 +544,6 @@ class InvoiceController extends Controller
             ]);
         }
         
-        // EXISTING: Web response
         return back()->with('success', 'Quotation accepted successfully!');
     }
 
@@ -501,33 +587,5 @@ class InvoiceController extends Controller
             'items.*.unit_price.required' => 'Item unit price is required.',
             'items.*.unit_price.min' => 'Item unit price cannot be negative.',
         ]);
-    }
-
-    private function getStatusCounts(): array
-    {
-        $company = auth()->user()->company;
-        $cacheKey = "invoice_status_counts_{$company->id}";
-        
-        return Cache::tags(['invoices', 'quotations'])
-            ->remember($cacheKey, 600, function() use ($company) {
-                Log::info("Cache MISS: Regenerating status counts for company {$company->id}");
-                
-                return [
-                    'all_invoices' => $company->invoices()->count(),
-                    'draft_invoices' => $company->invoices()->byStatus('draft')->count(),
-                    'sent_invoices' => $company->invoices()->byStatus('sent')->count(),
-                    'paid_invoices' => $company->invoices()->byStatus('paid')->count(),
-                    'overdue_invoices' => $company->invoices()->overdue()->count(),
-                    
-                    'all_quotations' => $company->quotations()->count(),
-                    'draft_quotations' => $company->quotations()->byStatus('draft')->count(),
-                    'sent_quotations' => $company->quotations()->byStatus('sent')->count(),
-                    'accepted_quotations' => $company->quotations()->byStatus('accepted')->count(),
-                    'expired_quotations' => $company->quotations()
-                        ->where('valid_until', '<', now())
-                        ->whereNotIn('status', ['accepted', 'cancelled'])
-                        ->count(),
-                ];
-            });
     }
 }

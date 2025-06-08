@@ -5,6 +5,7 @@ use App\Http\Controllers\CompanyController;
 use App\Http\Controllers\ClientController;
 use App\Http\Controllers\InvoiceController;
 use App\Http\Controllers\ChatGptController;
+use App\Services\CacheService;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
@@ -31,49 +32,39 @@ Route::middleware('auth')->group(function () {
             $user = auth()->user();
             $company = $user->company;
 
-            // Use cached data for significant performance improvement
-            $stats = \App\Services\CacheService::getDashboardStats($company->id);
+            try {
+                // Use cached data for significant performance improvement
+                $stats = CacheService::getDashboardStats($company->id);
+                $recentInvoices = CacheService::getRecentInvoices($company->id, 5);
+                $recentQuotations = CacheService::getRecentQuotations($company->id, 5);
+                $recentClients = CacheService::getRecentClients($company->id, 5);
                 
-            $recentInvoices = \App\Services\CacheService::getRecentInvoices($company->id, 5);
-            $recentQuotations = \App\Services\CacheService::getRecentQuotations($company->id, 5);
-            $recentClients = \App\Services\CacheService::getRecentClients($company->id, 5);
+                // Cache performance metrics for monitoring
+                $cacheStats = CacheService::getCacheStats();
                 
-            // Cache hit rate for monitoring
-            $cacheStats = \App\Services\CacheService::getCacheStats();
-            
-            // Dashboard stats
-            $stats = [
-                'total_clients' => $company->clients()->count(),
-                'total_invoices' => $company->invoices()->count(),
-                'total_quotations' => $company->quotations()->count(), // NEW
-                'pending_invoices' => $company->invoices()->whereIn('status', ['draft', 'sent', 'viewed'])->count(),
-                'overdue_invoices' => $company->invoices()->overdue()->count(),
-                'pending_quotations' => $company->quotations()->whereIn('status', ['draft', 'sent'])->count(), // NEW
-                'total_revenue' => $company->invoices()->byStatus('paid')->sum('total'),
-                'pending_amount' => $company->invoices()->whereIn('status', ['sent', 'viewed'])->sum('total'),
-            ];
-            
-            // Recent invoices
-            $recentInvoices = $company->invoices()
-                ->with(['client', 'payments'])
-                ->latest()
-                ->take(5)
-                ->get();
+                return view('dashboard', compact('stats', 'recentInvoices', 'recentQuotations', 'recentClients', 'cacheStats'));
+            } catch (\Exception $e) {
+                \Log::error('Dashboard cache error: ' . $e->getMessage());
                 
-            // Recent quotations (NEW)
-            $recentQuotations = $company->quotations()
-                ->with(['client'])
-                ->latest()
-                ->take(5)
-                ->get();
+                // Fallback to direct database queries if cache fails
+                $stats = [
+                    'total_clients' => $company->clients()->count(),
+                    'total_invoices' => $company->invoices()->count(),
+                    'total_quotations' => $company->quotations()->count(),
+                    'pending_invoices' => $company->invoices()->whereIn('status', ['draft', 'sent', 'viewed'])->count(),
+                    'overdue_invoices' => $company->invoices()->overdue()->count(),
+                    'pending_quotations' => $company->quotations()->whereIn('status', ['draft', 'sent'])->count(),
+                    'total_revenue' => $company->invoices()->byStatus('paid')->sum('total'),
+                    'pending_amount' => $company->invoices()->whereIn('status', ['sent', 'viewed'])->sum('total'),
+                ];
                 
-            // Recent clients
-            $recentClients = $company->clients()
-                ->latest()
-                ->take(5)
-                ->get();
-            
-            return view('dashboard', compact('stats', 'recentInvoices', 'recentQuotations', 'recentClients','cacheStats'));
+                $recentInvoices = $company->invoices()->with(['client', 'payments'])->latest()->take(5)->get();
+                $recentQuotations = $company->quotations()->with(['client'])->latest()->take(5)->get();
+                $recentClients = $company->clients()->latest()->take(5)->get();
+                $cacheStats = ['error' => 'Cache unavailable'];
+                
+                return view('dashboard', compact('stats', 'recentInvoices', 'recentQuotations', 'recentClients', 'cacheStats'));
+            }
         })->name('dashboard');
         
         // Invoice and Quotation routes
@@ -82,7 +73,7 @@ Route::middleware('auth')->group(function () {
         Route::patch('invoices/{invoice}/mark-sent', [InvoiceController::class, 'markAsSent'])->name('invoices.mark-sent');
         Route::patch('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markAsPaid'])->name('invoices.mark-paid');
         
-        // Quotation specific routes (NEW)
+        // Quotation specific routes
         Route::patch('quotations/{invoice}/accept', [InvoiceController::class, 'acceptQuotation'])->name('quotations.accept');
         Route::post('quotations/{invoice}/convert', [InvoiceController::class, 'convertToInvoice'])->name('quotations.convert');
         
@@ -97,6 +88,37 @@ Route::middleware('auth')->group(function () {
         Route::get('/chatgpt', [ChatGptController::class, 'index'])->name('chatgpt.index');
         Route::post('/chatgpt/chat', [ChatGptController::class, 'chat'])->name('chatgpt.chat');
         Route::post('/chatgpt/transcribe', [ChatGptController::class, 'transcribe'])->name('chatgpt.transcribe');
+        
+        // Cache management routes (for admins/debugging)
+        Route::prefix('cache')->name('cache.')->group(function () {
+            Route::get('/stats', function () {
+                $user = auth()->user();
+                return response()->json([
+                    'cache_stats' => CacheService::getCacheStats(),
+                    'cache_health' => CacheService::healthCheck(),
+                    'cache_size' => CacheService::getCacheSize(),
+                    'user_company_id' => $user->company->id
+                ]);
+            })->name('stats');
+            
+            Route::post('/warm-up', function () {
+                $user = auth()->user();
+                CacheService::warmUpCache($user->company->id);
+                return response()->json(['message' => 'Cache warmed up successfully']);
+            })->name('warm-up');
+            
+            Route::post('/invalidate', function () {
+                $user = auth()->user();
+                CacheService::invalidateCompanyCache($user->company->id);
+                return response()->json(['message' => 'Cache invalidated successfully']);
+            })->name('invalidate');
+            
+            Route::post('/clear-tags', function () {
+                $tags = request()->input('tags', ['dashboard', 'clients', 'invoices', 'quotations']);
+                CacheService::invalidateByTags($tags);
+                return response()->json(['message' => 'Cache tags cleared successfully', 'tags' => $tags]);
+            })->name('clear-tags');
+        });
     });
 });
 
