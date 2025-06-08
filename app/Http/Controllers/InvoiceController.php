@@ -506,34 +506,28 @@ class InvoiceController extends Controller
     private function getStatusCounts(): array
     {
         $company = auth()->user()->company;
+        $cacheKey = "invoice_status_counts_{$company->id}";
         
-        return [
-            // Combined counts for unified view
-            'all' => $company->allDocuments()->count(),
-            'draft' => $company->allDocuments()->byStatus('draft')->count(),
-            'sent' => $company->allDocuments()->byStatus('sent')->count(),
-            'paid' => $company->invoices()->byStatus('paid')->count() + $company->quotations()->byStatus('accepted')->count(),
-            'overdue' => $company->invoices()->overdue()->count(),
-            'expired' => $company->quotations()
-                ->where('valid_until', '<', now())
-                ->whereNotIn('status', ['accepted', 'cancelled'])
-                ->count(),
-            
-            // Individual counts for filtering
-            'all_invoices' => $company->invoices()->count(),
-            'draft_invoices' => $company->invoices()->byStatus('draft')->count(),
-            'sent_invoices' => $company->invoices()->byStatus('sent')->count(),
-            'paid_invoices' => $company->invoices()->byStatus('paid')->count(),
-            'overdue_invoices' => $company->invoices()->overdue()->count(),
-            
-            'all_quotations' => $company->quotations()->count(),
-            'draft_quotations' => $company->quotations()->byStatus('draft')->count(),
-            'sent_quotations' => $company->quotations()->byStatus('sent')->count(),
-            'accepted_quotations' => $company->quotations()->byStatus('accepted')->count(),
-            'expired_quotations' => $company->quotations()
-                ->where('valid_until', '<', now())
-                ->whereNotIn('status', ['accepted', 'cancelled'])
-                ->count(),
-        ];
+        return Cache::tags(['invoices', 'quotations'])
+            ->remember($cacheKey, 600, function() use ($company) {
+                Log::info("Cache MISS: Regenerating status counts for company {$company->id}");
+                
+                return [
+                    'all_invoices' => $company->invoices()->count(),
+                    'draft_invoices' => $company->invoices()->byStatus('draft')->count(),
+                    'sent_invoices' => $company->invoices()->byStatus('sent')->count(),
+                    'paid_invoices' => $company->invoices()->byStatus('paid')->count(),
+                    'overdue_invoices' => $company->invoices()->overdue()->count(),
+                    
+                    'all_quotations' => $company->quotations()->count(),
+                    'draft_quotations' => $company->quotations()->byStatus('draft')->count(),
+                    'sent_quotations' => $company->quotations()->byStatus('sent')->count(),
+                    'accepted_quotations' => $company->quotations()->byStatus('accepted')->count(),
+                    'expired_quotations' => $company->quotations()
+                        ->where('valid_until', '<', now())
+                        ->whereNotIn('status', ['accepted', 'cancelled'])
+                        ->count(),
+                ];
+            });
     }
 }

@@ -4,6 +4,7 @@ use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\CompanyController;
 use App\Http\Controllers\ClientController;
 use App\Http\Controllers\InvoiceController;
+use App\Http\Controllers\ChatGptController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
@@ -29,6 +30,16 @@ Route::middleware('auth')->group(function () {
         Route::get('/dashboard', function () {
             $user = auth()->user();
             $company = $user->company;
+
+            // Use cached data for significant performance improvement
+            $stats = \App\Services\CacheService::getDashboardStats($company->id);
+                
+            $recentInvoices = \App\Services\CacheService::getRecentInvoices($company->id, 5);
+            $recentQuotations = \App\Services\CacheService::getRecentQuotations($company->id, 5);
+            $recentClients = \App\Services\CacheService::getRecentClients($company->id, 5);
+                
+            // Cache hit rate for monitoring
+            $cacheStats = \App\Services\CacheService::getCacheStats();
             
             // Dashboard stats
             $stats = [
@@ -62,7 +73,7 @@ Route::middleware('auth')->group(function () {
                 ->take(5)
                 ->get();
             
-            return view('dashboard', compact('stats', 'recentInvoices', 'recentQuotations', 'recentClients'));
+            return view('dashboard', compact('stats', 'recentInvoices', 'recentQuotations', 'recentClients','cacheStats'));
         })->name('dashboard');
         
         // Invoice and Quotation routes
@@ -81,6 +92,11 @@ Route::middleware('auth')->group(function () {
         
         // Client routes
         Route::resource('clients', ClientController::class);
+        
+        // ChatGPT routes
+        Route::get('/chatgpt', [ChatGptController::class, 'index'])->name('chatgpt.index');
+        Route::post('/chatgpt/chat', [ChatGptController::class, 'chat'])->name('chatgpt.chat');
+        Route::post('/chatgpt/transcribe', [ChatGptController::class, 'transcribe'])->name('chatgpt.transcribe');
     });
 });
 

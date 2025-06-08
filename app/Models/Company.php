@@ -135,4 +135,33 @@ class Company extends Model
     {
         return $query->where('user_id', $userId);
     }
+    public function getCachedClientsCountAttribute()
+    {
+        return Cache::tags(['clients'])
+            ->remember("clients_count_{$this->id}", 1800, function() {
+                return $this->clients()->count();
+            });
+    }
+    public function getCachedInvoicesCountAttribute()
+    {
+        return Cache::tags(['invoices'])
+            ->remember("invoices_count_{$this->id}", 1800, function() {
+                return $this->invoices()->count();
+            });
+    }
+
+    public function getCachedTotalRevenueAttribute()
+    {
+        return Cache::tags(['invoices'])
+            ->remember("total_revenue_{$this->id}", 900, function() {
+                return $this->invoices()->where('status', 'paid')->sum('total');
+            });
+    }
+    protected static function booted()
+    {
+        static::updated(function ($company) {
+            \App\Services\CacheService::invalidateByTags(['company']);
+        });
+    }
+
 }

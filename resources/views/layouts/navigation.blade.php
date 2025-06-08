@@ -26,6 +26,10 @@
                             {{ __('Clients') }}
                         </x-nav-link>
                         
+                        <x-nav-link :href="route('chatgpt.index')" :active="request()->routeIs('chatgpt.*')">
+                            {{ __('ChatGPT') }}
+                        </x-nav-link>
+                        
                         <!-- Company name as navigation item -->
                         <x-nav-link :href="route('company.edit')" :active="request()->routeIs('company.*')" class="flex items-center">
                             @if(auth()->user()->company->logo)
@@ -198,6 +202,10 @@
                 
                 <x-responsive-nav-link :href="route('clients.index')" :active="request()->routeIs('clients.*')">
                     {{ __('Clients') }}
+                </x-responsive-nav-link>
+                
+                <x-responsive-nav-link :href="route('chatgpt.index')" :active="request()->routeIs('chatgpt.*')">
+                    {{ __('ChatGPT') }}
                 </x-responsive-nav-link>
                 
                 <!-- Mobile Create Invoice -->

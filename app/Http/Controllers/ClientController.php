@@ -11,13 +11,18 @@ class ClientController extends Controller
     public function index(Request $request)
     {
         $search = $request->get('search');
-        
-        $clients = auth()->user()->company->clients()
-            ->when($search, function ($query, $search) {
-                $query->search($search);
-            })
-            ->latest()
-            ->paginate(15);
+
+        if (!$search) {
+            $clients = \App\Services\CacheService::getClientsList(auth()->user()->company->id);
+            // Apply pagination manually if needed
+            $clients = $clients->paginate(15);
+        } else {
+            // Don't cache search results
+            $clients = auth()->user()->company->clients()
+                ->search($search)
+                ->latest()
+                ->paginate(15);
+        }
 
         return view('clients.index', compact('clients', 'search'));
     }
@@ -46,7 +51,9 @@ class ClientController extends Controller
         $validated['company_id'] = auth()->user()->company->id;
         
         $client = Client::create($validated);
-
+        
+        // Cache will be automatically invalidated by observer
+        
         return redirect()->route('clients.show', $client)
             ->with('success', 'Client created successfully!');
     }
