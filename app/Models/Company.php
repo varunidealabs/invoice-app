@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Cache;
 
 class Company extends Model
 {
@@ -130,38 +131,69 @@ class Company extends Model
         };
     }
 
+    // Fixed cached methods with proper error handling
+    public function getCachedClientsCountAttribute()
+    {
+        try {
+            return Cache::tags(['clients'])
+                ->remember("clients_count_{$this->id}", 1800, function() {
+                    return $this->clients()->count();
+                });
+        } catch (\Exception $e) {
+            \Log::warning("Cache failed for clients count: " . $e->getMessage());
+            return $this->clients()->count();
+        }
+    }
+
+    public function getCachedInvoicesCountAttribute()
+    {
+        try {
+            return Cache::tags(['invoices'])
+                ->remember("invoices_count_{$this->id}", 1800, function() {
+                    return $this->invoices()->count();
+                });
+        } catch (\Exception $e) {
+            \Log::warning("Cache failed for invoices count: " . $e->getMessage());
+            return $this->invoices()->count();
+        }
+    }
+
+    public function getCachedTotalRevenueAttribute()
+    {
+        try {
+            return Cache::tags(['invoices'])
+                ->remember("total_revenue_{$this->id}", 900, function() {
+                    return $this->invoices()->where('status', 'paid')->sum('total');
+                });
+        } catch (\Exception $e) {
+            \Log::warning("Cache failed for total revenue: " . $e->getMessage());
+            return $this->invoices()->where('status', 'paid')->sum('total');
+        }
+    }
+
     // Scopes
     public function scopeForUser($query, $userId)
     {
         return $query->where('user_id', $userId);
     }
-    public function getCachedClientsCountAttribute()
-    {
-        return Cache::tags(['clients'])
-            ->remember("clients_count_{$this->id}", 1800, function() {
-                return $this->clients()->count();
-            });
-    }
-    public function getCachedInvoicesCountAttribute()
-    {
-        return Cache::tags(['invoices'])
-            ->remember("invoices_count_{$this->id}", 1800, function() {
-                return $this->invoices()->count();
-            });
-    }
 
-    public function getCachedTotalRevenueAttribute()
-    {
-        return Cache::tags(['invoices'])
-            ->remember("total_revenue_{$this->id}", 900, function() {
-                return $this->invoices()->where('status', 'paid')->sum('total');
-            });
-    }
+    // Fixed boot method with proper cache invalidation
     protected static function booted()
     {
         static::updated(function ($company) {
-            \App\Services\CacheService::invalidateByTags(['company']);
+            try {
+                \App\Services\CacheService::invalidateByTags(['company']);
+            } catch (\Exception $e) {
+                \Log::warning("Cache invalidation failed for company update: " . $e->getMessage());
+            }
+        });
+
+        static::deleted(function ($company) {
+            try {
+                \App\Services\CacheService::invalidateCompanyCache($company->id);
+            } catch (\Exception $e) {
+                \Log::warning("Cache invalidation failed for company deletion: " . $e->getMessage());
+            }
         });
     }
-
 }
